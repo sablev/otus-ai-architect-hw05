@@ -13,7 +13,7 @@ OTUS «AI Architect» (ДЗ 05).
 - [Компоненты Recommendation Serving API (C3)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--recommendation-serving-api--components)
 - [Компоненты Description Generation Worker (C3)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--description-generation-worker--components)
 - [Сценарий «Пользователь запрашивает рекомендацию» (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--request-recommendation--dynamic/?dynamic=sequence)
-- [Сценарий офлайн-предгенерации описаний (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--pregenerate-descriptions--dynamic/?dynamic=sequence)
+- [Сценарий «Офлайн-предгенерация описаний» (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--pregenerate-descriptions--dynamic/?dynamic=sequence)
 
 Спецификации API в SwaggerUI:
 

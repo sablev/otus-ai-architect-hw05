@@ -8,12 +8,12 @@ OTUS «AI Architect» (ДЗ 05).
 
 Интерактивные диаграммы (LikeC4), прямые ссылки на каждое представление:
 
-- [Диаграмма системного контекста (C1)](https://sablev.github.io/otus-ai-architect-hw05/view/index)
-- [Диаграмма контейнеров (C2)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--containers)
-- [Компоненты Recommendation Serving API (C3)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--recommendation-serving-api--components)
-- [Компоненты Description Generation Worker (C3)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--description-generation-worker--components)
-- [Сценарий «Пользователь запрашивает рекомендацию» (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--request-recommendation--dynamic/?dynamic=sequence)
-- [Сценарий «Офлайн-предгенерация описаний» (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--pregenerate-descriptions--dynamic/?dynamic=sequence)
+- [Платформа рекомендаций / Диаграмма системного контекста](https://sablev.github.io/otus-ai-architect-hw05/view/index)
+- [Платформа рекомендаций / Диаграмма контейнеров](https://sablev.github.io/otus-ai-architect-hw05/view/platform--containers)
+- [Платформа рекомендаций / Recommendation Serving API / Диаграмма компонентов](https://sablev.github.io/otus-ai-architect-hw05/view/platform--recommendation-serving-api--components)
+- [Платформа рекомендаций / Description Generation Worker / Диаграмма компонентов](https://sablev.github.io/otus-ai-architect-hw05/view/platform--description-generation-worker--components)
+- [Платформа рекомендаций / Динамическая диаграмма получения рекомендаций пользователем](https://sablev.github.io/otus-ai-architect-hw05/view/platform--request-recommendation--dynamic/?dynamic=sequence)
+- [Платформа рекомендаций / Динамическая диаграмма офлайн-предгенерации описаний подборок](https://sablev.github.io/otus-ai-architect-hw05/view/platform--pregenerate-descriptions--dynamic/?dynamic=sequence)
 
 Спецификации API в SwaggerUI:
 

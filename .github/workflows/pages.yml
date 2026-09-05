@@ -33,7 +33,7 @@ jobs:
             likec4/likec4:1.59.2 \
             build --base "/${GITHUB_REPOSITORY#*/}/" --use-hash-history \
             -o /data/dist
-          mv likec4/dist site
+          sudo mv likec4/dist site
 
       # GitHub не рендерит OpenAPI нативно, поэтому рядом с диаграммами
       # публикуются две страницы SwaggerUI. Спеки кладутся с сохранением

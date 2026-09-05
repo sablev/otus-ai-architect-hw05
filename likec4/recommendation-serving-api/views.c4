@@ -229,6 +229,11 @@ views {
       title 'Видит блок рекомендаций с объяснением'
       description 'Пустого места на странице нет ни в штатном режиме, ни при отказе Serving API'
     }
+    platform.widget -> platform.events {
+      title 'Отправляет событие показа, request_id подборки'
+      technology 'HTTPS, sendBeacon'
+      description 'Асинхронно, после ответа покупателю: событие не входит в бюджет 200 мс. По request_id показ связывается с выдачей, по experiment_id и variant — с рукавом A/B-пилота; клик отправляется так же при переходе'
+    }
   }
 
 }

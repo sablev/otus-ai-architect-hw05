@@ -199,7 +199,7 @@ components:
         поэтому два пользователя одного сегмента получают разные items
         при одинаковых candidate_strategy и set_version
       required: [request_id, slot, candidate_strategy, personalization_level,
-                 set_version, generated_at, model_version, items]
+                 set_version, generated_at, model_version, explanation, items]
       properties:
         request_id:
           type: string

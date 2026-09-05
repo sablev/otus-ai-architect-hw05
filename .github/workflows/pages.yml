@@ -21,11 +21,19 @@ jobs:
 
       # Сайт отдаётся из подкаталога /<имя репозитория>/, поэтому --base
       # вычисляется из GITHUB_REPOSITORY, а не зашит литералом.
+      # --use-hash-history: маршруты вида /#/view/<id> не уходят на сервер,
+      # иначе прямые ссылки на представления получали бы HTTP 404
+      # (GitHub Pages отдаёт SPA-оболочку через 404.html со статусом 404).
+      # Монтируется сам каталог модели: при монтировании всего workspace
+      # CLI считает outDir относительно vite-root внутри образа, и сборка
+      # падает с ENOENT на scandir выходного каталога.
       - name: Build LikeC4 static site
-        run: >-
-          docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w
-          likec4/likec4:1.59.2
-          build --base "/${GITHUB_REPOSITORY#*/}/" -o /w/site /w/c4
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/likec4:/data" \
+            likec4/likec4:1.59.2 \
+            build --base "/${GITHUB_REPOSITORY#*/}/" --use-hash-history \
+            -o /data/dist
+          mv likec4/dist site
 
       # GitHub не рендерит OpenAPI нативно, поэтому рядом с диаграммами
       # публикуются две страницы SwaggerUI. Спеки кладутся с сохранением

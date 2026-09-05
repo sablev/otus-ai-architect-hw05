@@ -112,7 +112,25 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/RecommendationResponse'
+                allOf:
+                  - $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/RecommendationResponse'
+                  - type: object
+                    required: [experiment]
+                    properties:
+                      experiment:
+                        type: object
+                        description: |
+                          Рукав A/B-пилота, назначенный Backend при выдаче. Виджет
+                          возвращает оба поля в событиях показа и клика — по ним
+                          считаются конверсия и AOV control/treatment (DoD MVP из ДЗ 03)
+                        required: [experiment_id, variant]
+                        properties:
+                          experiment_id:
+                            type: string
+                            examples: ['ab-cross-sell-mvp']
+                          variant:
+                            type: string
+                            enum: [control, treatment]
               examples:
                 servingOk:
                   summary: Штатный ответ, проксированный от Serving API
@@ -124,6 +142,9 @@ paths:
                     set_version: v42-9f2c1a7b
                     generated_at: '2026-08-16T03:15:00Z'
                     model_version: item2item-2026.08.14
+                    experiment:
+                      experiment_id: ab-cross-sell-mvp
+                      variant: treatment
                     explanation:
                       title: Аксессуары к вашему ноутбуку
                       text: Эти мыши и подставки подходят к выбранной модели по разъёму и весу.
@@ -146,6 +167,9 @@ paths:
                     set_version: rb-static
                     generated_at: '2026-08-16T03:16:20Z'
                     model_version: rule-based-bitrix
+                    experiment:
+                      experiment_id: ab-cross-sell-mvp
+                      variant: treatment
                     explanation:
                       title: С этим товаром часто покупают
                       text: Популярные сопутствующие товары по правилам каталога.

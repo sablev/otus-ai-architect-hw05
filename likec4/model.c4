@@ -42,7 +42,7 @@ model {
       title 'Recommendation Backend'
       icon tech:go
       technology 'Go, HTTP API'
-      description 'Раздаёт бандл виджета, держит сессию, псевдонимизирует пользователя и при отказе Serving API отдаёт резервный rule-based блок из локального кэша, синхронизируемого с сайтом в фоне'
+      description 'Раздаёт бандл виджета, держит сессию, псевдонимизирует пользователя, назначает его в control/treatment A/B-пилота и при отказе Serving API отдаёт резервный rule-based блок из локального кэша, синхронизируемого с сайтом в фоне'
     }
 
     container serving {
@@ -77,6 +77,14 @@ model {
       description 'Выполняет инференс self-hosted модели, не получая персональных данных'
     }
 
+    container events {
+      #async
+      title 'Event Collector'
+      icon tech:go
+      technology 'Go, HTTP'
+      description 'Принимает от виджета события показов, кликов и переходов, привязывает их к request_id подборки и пишет в сырой лог; вне критического пути ответа'
+    }
+
     database cache {
       title 'Recommendations Cache'
       icon tech:redis
@@ -96,6 +104,13 @@ model {
       icon tech:qdrant
       technology 'Qdrant'
       description 'Хранит эмбеддинги товаров для поиска похожих и извлечения атрибутов'
+    }
+
+    database eventstore {
+      title 'Raw Event Store'
+      icon tech:postgresql
+      technology 'PostgreSQL 17'
+      description 'Сырые поведенческие события с experiment_id и variant: показ, клик, переход; источник для расчёта конверсии и AOV в A/B-пилоте и для офлайн-расчёта наборов'
     }
   }
 
@@ -175,5 +190,23 @@ model {
     title 'Публикует наборы кандидатов под версией'
     technology 'Redis protocol'
     description 'Версия набора входит в ключ; Serving читает набор по ключу «товар плюс сегмент плюс версия»'
+  }
+
+  platform.widget -> platform.events {
+    title 'Отправляет события показа и клика'
+    technology 'HTTPS, sendBeacon'
+    description 'Асинхронно, вне критического пути: событие несёт request_id подборки, поэтому показ и клик связываются с конкретной выдачей; DoD MVP из ДЗ 03 — статистически значимый uplift конверсии в A/B-пилоте'
+  }
+
+  platform.events -> platform.eventstore {
+    title 'Пишет сырые события'
+    technology 'SQL'
+    description 'События хранятся с experiment_id и variant, назначенными Backend; по ним считаются конверсия и AOV control/treatment'
+  }
+
+  platform.pipeline -> platform.eventstore {
+    title 'Читает события для расчёта наборов'
+    technology 'SQL'
+    description 'Поведенческие сигналы пилота входят в офлайн-расчёт наборов кандидатов; контур замыкает петлю «выдача → реакция → обучение»'
   }
 }

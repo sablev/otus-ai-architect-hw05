@@ -34,6 +34,9 @@ jobs:
       - name: Add SwaggerUI pages for API specs
         run: |
           set -euo pipefail
+          # likec4 собрал site/ от root — возвращаем каталог пользователю
+          # раннера, иначе mkdir/cp ниже упадут с permission denied.
+          sudo chown -R "$(id -u):$(id -g)" site
           for d in recommendation-serving-api recommendation-backend; do
             mkdir -p "site/api/$d"
             docker run --rm --entrypoint sh \

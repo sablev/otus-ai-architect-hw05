@@ -1,0 +1,98 @@
+model {
+
+  extend platform.serving {
+    component controller {
+      title 'Recommendation Controller'
+      description 'Принимает запрос на маршруте GET /v1/recommendations, валидирует параметры и следит за бюджетом времени'
+    }
+    component orchestrator {
+      title 'Recommendation Orchestrator'
+      description 'Задаёт порядок шагов ответа и собирает итоговую выдачу'
+    }
+    component segments {
+      title 'Segment Resolver'
+      description 'Определяет сегмент покупателя по X-User-Ref; при отсутствии идентификатора или записи подставляет seg-anon'
+    }
+    component cacheClient {
+      title 'Cache Client'
+      description 'Читает наборы кандидатов и тексты по ключу «товар плюс сегмент плюс версия»'
+    }
+    component exclusions {
+      title 'Exclusion Filter'
+      description 'Убирает купленное офлайн, уже виденное и позиции из стоп-листов'
+    }
+    component ranking {
+      title 'Ranking Engine'
+      description 'Ранжирует короткий список по наличию на складе и правилам категории'
+    }
+    component descriptions {
+      title 'Description Provider'
+      description 'Отдаёт текст подборки, если его версия совпала с версией итогового набора'
+    }
+  }
+
+  platform.backend -> platform.serving.controller {
+    title 'Запрашивает подборку рекомендаций'
+    technology 'HTTPS'
+    description 'Единственный вход в ML-контур (GET /v1/recommendations, JSON); аутентификация ключом в заголовке X-Api-Key, идентичность — псевдонимный X-User-Ref; контракт — api/recommendation-serving-api/openapi.yaml'
+  }
+
+  platform.serving.controller -> platform.serving.orchestrator {
+    title 'Передаёт валидированный запрос'
+    description 'Внутрипроцессный вызов; контроллер следит за бюджетом ответа 200 мс'
+  }
+
+  platform.serving.orchestrator -> platform.serving.segments {
+    title 'Запрашивает сегмент покупателя'
+    description 'Внутрипроцессный вызов; сегмент определяется по X-User-Ref, при его отсутствии подставляется seg-anon'
+  }
+
+  platform.serving.orchestrator -> platform.serving.cacheClient {
+    title 'Запрашивает набор кандидатов'
+    description 'Внутрипроцессный вызов; при промахе кэша применяется предрассчитанный набор popular_fallback'
+  }
+
+  platform.serving.orchestrator -> platform.serving.exclusions {
+    title 'Применяет персональные исключения'
+    description 'Внутрипроцессный вызов; убираются купленное офлайн, уже виденное и позиции из стоп-листов'
+  }
+
+  platform.serving.orchestrator -> platform.serving.ranking {
+    title 'Ранжирует короткий список'
+    description 'Внутрипроцессный вызов; по наличию на складе и правилам категории'
+  }
+
+  platform.serving.orchestrator -> platform.serving.descriptions {
+    title 'Запрашивает текст подборки'
+    description 'Внутрипроцессный вызов; текст применяется только при совпадении его версии с версией итогового набора, иначе подставляется статический шаблон'
+  }
+
+  platform.serving.segments -> platform.sqldb {
+    title 'Читает витрину сегментов по X-User-Ref'
+    technology 'SQL'
+    description 'Чтение по ключу из PostgreSQL; витрину сегментов публикует Offline Recommendation Pipeline'
+  }
+
+  platform.serving.cacheClient -> platform.cache {
+    title 'Читает наборы и тексты'
+    technology 'Redis protocol'
+    description 'Чтение по ключу «товар плюс сегмент плюс версия» из Redis'
+  }
+
+  platform.serving.exclusions -> platform.sqldb {
+    title 'Читает офлайн-покупки пользователя'
+    technology 'SQL'
+    description 'Чтение по ключу из PostgreSQL; офлайн-покупки поступают из синхронизации сайта с 1С через пайплайн'
+  }
+
+  platform.serving.ranking -> platform.sqldb {
+    title 'Читает остатки и правила категории'
+    technology 'SQL'
+    description 'Чтение по ключу из PostgreSQL'
+  }
+
+  platform.serving.descriptions -> platform.serving.cacheClient {
+    title 'Читает текст по версии набора'
+    description 'Внутрипроцессный вызов к клиенту кэша'
+  }
+}

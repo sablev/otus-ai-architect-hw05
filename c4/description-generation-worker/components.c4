@@ -1,0 +1,74 @@
+model {
+
+  extend platform.generator {
+    component ragManager {
+      title 'RAG Manager'
+      description 'Извлекает атрибуты товаров из каталога и Vector DB для генерации текста'
+    }
+    component promptFactory {
+      title 'Prompt Template Factory'
+      description 'Собирает промпт из шаблона по типу подборки и категории товара'
+    }
+    component llmClient {
+      title 'LLM Client'
+      description 'Вызывает self-hosted модель, не передавая персональных данных'
+    }
+    component guardrails {
+      title 'Fact Checker'
+      description 'Сверяет сгенерированный текст с атрибутами каталога и отбраковывает выдумки'
+    }
+    component publisher {
+      title 'Description Publisher'
+      description 'Публикует текст под версией набора, для которого он сгенерирован'
+    }
+  }
+
+  platform.pipeline -> platform.generator.ragManager {
+    title 'Передаёт ключ и версию изменившегося набора'
+    description 'Запускает офлайн-генерацию текста для наборов, опубликованных пайплайном под новой версией'
+  }
+
+  platform.generator.ragManager -> platform.sqldb {
+    title 'Читает карточку товара и характеристики'
+    technology 'SQL'
+    description 'Извлекает атрибуты товаров из снимка каталога в PostgreSQL для построения промпта'
+  }
+
+  platform.generator.ragManager -> platform.vectordb {
+    title 'Ищет атрибуты похожих товаров'
+    technology 'gRPC'
+    description 'Дополняет контекст генерации атрибутами похожих товаров по эмбеддингам из Qdrant'
+  }
+
+  platform.generator.ragManager -> platform.generator.promptFactory {
+    title 'Передаёт атрибуты и тип подборки'
+    description 'Внутрипроцессный вызов'
+  }
+
+  platform.generator.promptFactory -> platform.generator.llmClient {
+    title 'Отдаёт собранный промпт'
+    description 'Внутрипроцессный вызов'
+  }
+
+  platform.generator.llmClient -> platform.llm {
+    title 'Запрашивает генерацию текста'
+    technology 'HTTP'
+    description 'Инференс self-hosted модели по OpenAI-compatible API (POST /v1/chat/completions); персональные данные и идентификаторы пользователей не передаются'
+  }
+
+  platform.generator.llmClient -> platform.generator.guardrails {
+    title 'Передаёт черновик текста на проверку'
+    description 'Внутрипроцессный вызов'
+  }
+
+  platform.generator.guardrails -> platform.generator.publisher {
+    title 'Отдаёт проверенный текст'
+    description 'Внутрипроцессный вызов; текст, не сошедшийся с атрибутами каталога, отбраковывается и не публикуется'
+  }
+
+  platform.generator.publisher -> platform.cache {
+    title 'Пишет текст под версией набора'
+    technology 'Redis protocol'
+    description 'Текст публикуется под той же версией, что и набор кандидатов, — Serving применяет его только при совпадении версий'
+  }
+}

@@ -1,0 +1,149 @@
+views {
+
+  global style contours
+
+  view platform--description-generation-worker--components of platform.generator {
+    title 'Платформа рекомендаций / Description Generation Worker / Диаграмма компонентов'
+    description """
+      ### 1. Описание
+
+      Диаграмма компонентов контейнера Description Generation Worker (C3).
+      Здесь живут три из четырёх компонентов, названных в задании как пример:
+      RAG Manager, Prompt Template Factory и LLM Client. Четвёртый —
+      Controller — принадлежит онлайн-выдаче, поэтому диаграмм компонентов две.
+
+      Fact Checker закрывает риск **MODEL-HALL** из ДЗ 03: текст сверяется
+      с атрибутами каталога, и приписанное несуществующее свойство
+      отбраковывается до публикации. Ни персональные данные, ни идентификаторы
+      пользователей в генеративный контур не передаются — митигация **SEC-PII**,
+      модель размещается self-hosted.
+
+      Отказ воркера не затрагивает онлайн-выдачу: тексты просто стареют,
+      а выдача переходит на статический шаблон.
+
+      ### 2. Участники
+
+      | № | Компонент | Ответственность |
+      |---|---|---|
+      | 1 | RAG Manager | Извлекает атрибуты товаров из каталога и Vector DB |
+      | 2 | Prompt Template Factory | Собирает промпт по типу подборки и категории |
+      | 3 | LLM Client | Вызывает self-hosted модель без передачи персональных данных |
+      | 4 | Fact Checker | Сверяет текст с атрибутами каталога и отбраковывает выдумки |
+      | 5 | Description Publisher | Публикует текст под версией набора |
+
+      | № | Соседний контейнер | Взаимодействие |
+      |---|---|---|
+      | 1 | Offline Recommendation Pipeline | Передаёт ключ и версию изменившегося набора |
+      | 2 | LLM Inference Service | Выполняет инференс self-hosted модели |
+      | 3 | SQL DB, Vector DB | Хранят атрибуты товаров и эмбеддинги для RAG |
+      | 4 | Recommendations Cache | Принимает опубликованный текст под версией набора |
+
+      **Легенда**
+
+      | | |
+      |---|---|
+      | 🟦 | Компоненты контейнера и хранилища |
+      | 🟧 | Пайплайн и LLM Inference Service — контейнеры асинхронного контура |
+
+      ### 3. Сценарии
+
+      1. **Офлайн-предгенерация описаний подборок** — участвуют все пять компонентов.
+      """
+    include *
+    include platform.pipeline, platform.llm, platform.cache, platform.sqldb, platform.vectordb
+  }
+
+  dynamic view platform--pregenerate-descriptions--dynamic {
+    variant sequence
+    title 'Платформа рекомендаций / Динамическая диаграмма офлайн-предгенерации описаний подборок'
+    description """
+      ### 1. Описание
+
+      Сценарий офлайн-предгенерации описаний. Вынесен за пределы критического
+      пути ответа: именно поэтому онлайн-выдача укладывается в 200 мс.
+
+      Ключ кэша — товар и сегмент, а не пользователь, поэтому предгенерация
+      для двух миллионов MAU вычислительно возможна: объём определяется
+      каталогом и числом сегментов, а не числом людей.
+
+      Каждый шаг снабжён развёрнутым описанием: оно видно в интерактивном
+      walk-through (`likec4 start`), на статическом экспорте остаются короткие
+      подписи с технологией.
+
+      ### 2. Участники
+
+      | № | Участник | Ответственность в сценарии |
+      |---|---|---|
+      | 1 | Offline Recommendation Pipeline | Передаёт ключ и версию изменившегося набора |
+      | 2 | RAG Manager | Собирает атрибуты товаров из каталога и Vector DB |
+      | 3 | Prompt Template Factory | Собирает промпт по типу подборки и категории |
+      | 4 | LLM Client, LLM Inference Service | Порождают черновик текста |
+      | 5 | Fact Checker | Сверяет текст с атрибутами каталога |
+      | 6 | Description Publisher | Публикует текст под версией набора |
+
+      ### 3. Ветвления
+
+      | Блок | Условие | Что происходит |
+      |---|---|---|
+      | `alt` | Факты сходятся с каталогом | Текст публикуется по ключу с версией набора |
+      | `alt` | Приписано несуществующее свойство | Черновик отбраковывается, текст не публикуется |
+      """
+
+    platform.pipeline -> platform.generator.ragManager {
+      title 'Передаёт ключ и версию изменившегося набора'
+      description 'Генерация запускается только для наборов, опубликованных пайплайном под новой версией; неизменившиеся тексты не перегенерируются'
+    }
+    platform.generator.ragManager -> platform.sqldb {
+      title 'Читает карточки товаров и характеристики'
+      technology 'SQL'
+      description 'Атрибуты берутся из снимка каталога в PostgreSQL — фактическая основа промпта и последующей проверки'
+    }
+    platform.generator.ragManager -> platform.vectordb {
+      title 'Ищет атрибуты похожих товаров'
+      technology 'gRPC'
+      description 'Контекст дополняется атрибутами похожих товаров по эмбеддингам из Qdrant'
+    }
+    platform.generator.ragManager -> platform.generator.promptFactory {
+      title 'Передаёт атрибуты и тип подборки'
+      description 'Внутрипроцессный вызов; в генеративный контур уходят только атрибуты каталога, без персональных данных'
+    }
+    platform.generator.promptFactory -> platform.generator.llmClient {
+      title 'Отдаёт собранный промпт'
+      description 'Внутрипроцессный вызов; промпт собран из шаблона по типу подборки и категории товара'
+    }
+    platform.generator.llmClient -> platform.llm {
+      title 'POST /v1/chat/completions'
+      technology 'HTTP'
+      description 'Инференс self-hosted модели по OpenAI-compatible API; идентификаторы пользователей не передаются (митигация риска SEC-PII)'
+    }
+    platform.generator.llmClient <- platform.llm {
+      title 'Черновик заголовка и описания'
+      description 'Черновик ещё не публикуется: сначала он проходит проверку фактов'
+    }
+    platform.generator.llmClient -> platform.generator.guardrails {
+      title 'Передаёт черновик на проверку фактов'
+      description 'Внутрипроцессный вызов; Fact Checker закрывает риск MODEL-HALL из ДЗ 03'
+    }
+
+    alt {
+      when 'факты сходятся с атрибутами каталога' {
+        platform.generator.guardrails -> platform.generator.publisher {
+          title 'Отдаёт проверенный текст'
+          description 'Внутрипроцессный вызов; текст не содержит свойств, которых нет в каталоге'
+        }
+        platform.generator.publisher -> platform.cache {
+          title 'SET desc:SKU-100234:seg-7:v42'
+          technology 'Redis protocol'
+          description 'Текст публикуется под той же версией, что и набор кандидатов: Serving применит его только при совпадении версий'
+        }
+      }
+      else 'приписано несуществующее свойство' {
+        platform.generator.guardrails -> platform.generator.publisher {
+          title 'Черновик отбракован, публикация не выполняется'
+          description 'Внутрипроцессный вызов; выдача для этого ключа остаётся на статическом шаблоне до следующей генерации'
+        }
+      }
+    }
+  }
+
+}

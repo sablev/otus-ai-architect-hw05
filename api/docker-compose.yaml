@@ -1,0 +1,48 @@
+services:
+  swagger-ui-serving:
+    image: swaggerapi/swagger-ui:v5.32.13
+    container_name: hw05-swagger-ui-serving
+    ports:
+      - "8080:8080"
+    environment:
+      SWAGGER_JSON: /spec/recommendation-serving-api/openapi.yaml
+      DEEP_LINKING: "true"
+    volumes:
+      - ./:/spec:ro
+    restart: unless-stopped
+
+  prism-serving:
+    image: stoplight/prism:5.15.10
+    container_name: hw05-prism-mock-serving
+    init: true
+    # --no-multiprocess: в образе 5.15.10 мультипроцессный режим падает при старте
+    command: mock -h 0.0.0.0 --no-multiprocess /spec/recommendation-serving-api/openapi.yaml
+    ports:
+      - "4010:4010"
+    volumes:
+      - ./:/spec:ro
+    restart: unless-stopped
+
+  swagger-ui-backend:
+    image: swaggerapi/swagger-ui:v5.32.13
+    container_name: hw05-swagger-ui-backend
+    ports:
+      - "8081:8080"
+    environment:
+      SWAGGER_JSON: /spec/recommendation-backend/openapi.yaml
+      DEEP_LINKING: "true"
+    volumes:
+      - ./:/spec:ro
+    restart: unless-stopped
+
+  prism-backend:
+    image: stoplight/prism:5.15.10
+    container_name: hw05-prism-mock-backend
+    init: true
+    # --no-multiprocess: в образе 5.15.10 мультипроцессный режим падает при старте
+    command: mock -h 0.0.0.0 --no-multiprocess /spec/recommendation-backend/openapi.yaml
+    ports:
+      - "4011:4010"
+    volumes:
+      - ./:/spec:ro
+    restart: unless-stopped

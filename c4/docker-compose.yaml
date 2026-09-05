@@ -1,0 +1,20 @@
+services:
+  likec4:
+    image: likec4/likec4:1.59.2
+    container_name: hw05-likec4
+    init: true
+    # --listen 0.0.0.0 обязателен: по умолчанию сервер слушает 127.0.0.1
+    # и внутри контейнера остаётся недоступным с хоста.
+    command: start --listen 0.0.0.0 --port 5173 /data
+    working_dir: /data
+    ports:
+      - "5173:5173"
+      - "24678:24678"
+    environment:
+      # Проект лежит на примонтированном диске Windows (/mnt/d), где inotify
+      # не работает: без опроса горячая перезагрузка не видит правки .c4.
+      CHOKIDAR_USEPOLLING: "1"
+      CHOKIDAR_INTERVAL: "200"
+    volumes:
+      - ./:/data
+    restart: unless-stopped

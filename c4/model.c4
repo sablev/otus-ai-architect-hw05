@@ -1,0 +1,179 @@
+model {
+
+  person customer {
+    title 'Покупатель'
+    description 'Просматривает каталог, открывает карточки товаров и оформляет заказы'
+  }
+
+  system bitrix {
+    #external
+    title 'Сайт TechnoMart'
+    icon tech:php
+    description 'Обслуживает витрину магазина, даёт слот для встраивания виджета и отдаёт резервный rule-based блок'
+    technology 'PHP, Bitrix, MySQL'
+    style {
+      color muted
+    }
+  }
+
+  system onec {
+    #external
+    title '1С:Предприятие'
+    description 'Ведёт чеки, заказы и офлайн-покупки 150 магазинов, передаёт их на сайт раз в 15 минут'
+    style {
+      color muted
+    }
+  }
+
+  system platform {
+    title 'Платформа персональных рекомендаций'
+    description 'Подбирает товарные рекомендации и объясняет их текстом, оставаясь блоком внутри сайта TechnoMart'
+
+    container widget {
+      #hotpath
+      title 'Recommendation Widget'
+      icon tech:typescript
+      technology 'TypeScript, Web Component'
+      description 'Отображает блок рекомендаций в карточке товара; загружается в браузер покупателя как версионированный бандл и обновляется независимо от релизов сайта'
+    }
+
+    container backend {
+      #hotpath
+      title 'Recommendation Backend'
+      icon tech:go
+      technology 'Go, HTTP API'
+      description 'Раздаёт бандл виджета, держит сессию, псевдонимизирует пользователя и при отказе Serving API отдаёт резервный rule-based блок из локального кэша, синхронизируемого с сайтом в фоне'
+    }
+
+    container serving {
+      #hotpath
+      title 'Recommendation Serving API'
+      icon tech:python
+      technology 'Python, FastAPI'
+      description 'Отдаёт подборку из кэша, применяя персональные исключения и ранжирование в бюджете 200 мс'
+    }
+
+    container generator {
+      #async
+      title 'Description Generation Worker'
+      icon tech:python
+      technology 'Python'
+      description 'Генерирует описания подборок пакетно, вне бюджета ответа'
+    }
+
+    container pipeline {
+      #async
+      title 'Offline Recommendation Pipeline'
+      icon tech:airflow
+      technology 'Python, Airflow'
+      description 'Рассчитывает наборы кандидатов, версионирует их и публикует в кэш'
+    }
+
+    container llm {
+      #async
+      title 'LLM Inference Service'
+      icon tech:hugging-face
+      technology 'vLLM, open-source LLM'
+      description 'Выполняет инференс self-hosted модели, не получая персональных данных'
+    }
+
+    database cache {
+      title 'Recommendations Cache'
+      icon tech:redis
+      technology 'Redis 8'
+      description 'Хранит наборы кандидатов, предгенерированные тексты и резервные rule-based блоки сайта; версия набора входит в ключ'
+    }
+
+    database sqldb {
+      title 'SQL DB'
+      icon tech:postgresql
+      technology 'PostgreSQL 17'
+      description 'Хранит каталог, сегменты, персональные исключения и остатки'
+    }
+
+    database vectordb {
+      title 'Vector DB'
+      icon tech:qdrant
+      technology 'Qdrant'
+      description 'Хранит эмбеддинги товаров для поиска похожих и извлечения атрибутов'
+    }
+  }
+
+  customer -> bitrix {
+    title 'Просматривает каталог, открывает карточки товаров, оформляет заказы'
+    technology 'HTTPS'
+    description 'Основной сценарий витрины; на странице карточки товара размещён слот виджета рекомендаций'
+  }
+
+  customer -> platform.widget {
+    title 'Смотрит блок рекомендаций и переходит по нему в карточку товара'
+    description 'Взаимодействие с уже загруженной страницей, сетевого обмена нет; переход ведёт на карточку товара сайта'
+  }
+
+  bitrix -> platform.widget {
+    title 'Встраивает тег виджета, ссылающийся на бандл платформы, в слот шаблона карточки товара'
+    description 'Ядро Bitrix не изменяется: HTML-тег добавлен в слот шаблона карточки и ссылается на версионированный бандл платформы'
+  }
+
+  // Доставка кода отделена от слота в шаблоне: бандл раздаёт платформа, а не
+  // сайт. Это и делает виджет отдельно разворачиваемой единицей — его релиз
+  // не требует релиза Bitrix.
+  platform.widget -> platform.backend {
+    title 'Загружает JS-бандл'
+    technology 'HTTPS'
+    description 'Браузер загружает версионированный бандл по ссылке из тега (GET /widget.js); релиз виджета не зависит от релизов сайта'
+  }
+
+  platform.widget -> platform.backend {
+    title 'Запрашивает подборку рекомендаций'
+    technology 'HTTPS'
+    description 'Вызов публичной границы платформы из браузера (GET /api/widget/recommendations, JSON); контракт — api/recommendation-backend/openapi.yaml; при первом обращении Backend выставляет сессионную cookie'
+  }
+
+  platform.backend -> bitrix {
+    title 'Синхронизирует резервный rule-based блок в фоне'
+    technology 'HTTPS'
+    description 'Backend периодически забирает резервный блок и кладёт его в Recommendations Cache с TTL, обновляя по stale-while-revalidate; живой запрос к сайту в момент отказа Serving остаётся только при холодном кэше (новый SKU)'
+  }
+
+  platform.backend -> platform.cache {
+    title 'Читает резервный rule-based блок при отказе Serving API'
+    technology 'Redis protocol'
+    description 'Фолбэк при таймауте 200 мс или ответе 503: чтение по ключу «товар плюс слот» занимает единицы миллисекунд, поэтому бюджет ответа выдерживается и в деградации; блок не персонализирован, поэтому кэшируем; резервный блок отдаётся виджету кодом 200 с маркером candidate_strategy = rule_based'
+  }
+
+  platform.pipeline -> bitrix {
+    title 'Забирает чеки и офлайн-покупки из реплики MySQL'
+    technology 'SQL'
+    description 'MVP: чтение уже синхронизированных данных 1С из реплики MySQL раз в 15 минут — основная БД, которая по кейсу «задыхается», не нагружается. Целевое решение: CDC-репликация содержимого MySQL через Debezium (чтение binlog) в стейджинг-схему PostgreSQL платформы'
+  }
+
+  onec -> bitrix {
+    title 'Передаёт чеки и заказы по расписанию'
+    technology 'CommerceML'
+    description 'Существующий обмен As-Is, выполняется раз в 15 минут; инициатор — 1С (по базе на магазин, порядка 150), сайт принимает данные на свой endpoint'
+  }
+
+  platform.pipeline -> bitrix {
+    title 'Забирает выгрузку каталога'
+    description 'Существующая суточная выгрузка каталога As-Is в формате XML; транспорт в описании кейса не указан'
+  }
+
+  platform.pipeline -> platform.sqldb {
+    title 'Пишет снимок каталога, сегменты и исключения'
+    technology 'SQL'
+    description 'Публикует данные персонального слоя в PostgreSQL; читают их компоненты Serving API на критическом пути ответа'
+  }
+
+  platform.pipeline -> platform.vectordb {
+    title 'Ищет похожие товары по эмбеддингам'
+    technology 'gRPC'
+    description 'Поиск похожих товаров при офлайн-расчёте наборов кандидатов'
+  }
+
+  platform.pipeline -> platform.cache {
+    title 'Публикует наборы кандидатов под версией'
+    technology 'Redis protocol'
+    description 'Версия набора входит в ключ; Serving читает набор по ключу «товар плюс сегмент плюс версия»'
+  }
+}

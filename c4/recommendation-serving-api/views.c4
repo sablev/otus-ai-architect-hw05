@@ -1,0 +1,234 @@
+views {
+
+  global style contours
+
+  view platform--recommendation-serving-api--components of platform.serving {
+    title 'Платформа рекомендаций / Recommendation Serving API / Диаграмма компонентов'
+    description """
+      ### 1. Описание
+
+      Диаграмма компонентов контейнера Recommendation Serving API (C3) и
+      соседей, с которыми он обменивается напрямую.
+
+      Здесь видно, что именно кэшируется: **набор кандидатов сегмента**,
+      а не итоговая выдача. Она собирается на каждом запросе, поэтому двое
+      покупателей одного сегмента получают разные `items` при одинаковых
+      `candidate_strategy` и `set_version`. Живого вызова LLM в обработке
+      запроса нет: тексты подборок сгенерированы заранее.
+
+      ### 2. Участники
+
+      | № | Компонент | Ответственность |
+      |---|---|---|
+      | 1 | Recommendation Controller | Принимает запрос, валидирует параметры и следит за бюджетом времени |
+      | 2 | Recommendation Orchestrator | Задаёт порядок шагов ответа и собирает итоговую выдачу |
+      | 3 | Segment Resolver | Определяет сегмент по `X-User-Ref`, иначе подставляет `seg-anon` |
+      | 4 | Cache Client | Читает наборы и тексты по ключу «товар плюс сегмент плюс версия» |
+      | 5 | Exclusion Filter | Убирает купленное офлайн, уже виденное и стоп-листы |
+      | 6 | Ranking Engine | Ранжирует короткий список по наличию и правилам категории |
+      | 7 | Description Provider | Отдаёт текст при совпадении версии набора |
+
+      | № | Соседний контейнер | Взаимодействие |
+      |---|---|---|
+      | 1 | Recommendation Backend | Вызывает сервис по контракту `api/openapi.yaml` |
+      | 2 | Recommendations Cache | Хранит наборы кандидатов и предгенерированные тексты |
+      | 3 | SQL DB | Хранит сегменты, исключения, остатки и правила категорий |
+
+      **Легенда**
+
+      | | |
+      |---|---|
+      | 🟦 | Компоненты контейнера и хранилища, к которым он обращается |
+      | 🟩 | Recommendation Backend — вызывающий с критического пути ответа |
+
+      ### 3. Сценарии
+
+      1. **Запрос рекомендации пользователем** — участвуют все семь компонентов.
+      """
+    include *
+    include platform.backend, platform.cache, platform.sqldb
+  }
+
+  dynamic view platform--request-recommendation--dynamic {
+    variant sequence
+    title 'Платформа рекомендаций / Динамическая диаграмма получения рекомендаций пользователем'
+    description """
+      ### 1. Описание
+
+      Основной сценарий задания — «Пользователь запрашивает рекомендацию».
+      Отрисован как диаграмма последовательности.
+
+      Вызова LLM в сценарии нет: тексты сгенерированы заранее. Проверка версии
+      текста против версии итогового набора закрывает рассогласование, при
+      котором описание ссылалось бы на товар, выброшенный фильтром исключений.
+
+      Каждый шаг снабжён развёрнутым описанием: оно видно в интерактивном
+      walk-through (`likec4 start`), на статическом экспорте остаются короткие
+      подписи с технологией.
+
+      ### 2. Участники
+
+      | № | Участник | Ответственность в сценарии |
+      |---|---|---|
+      | 1 | Покупатель | Открывает карточку товара и видит блок рекомендаций |
+      | 2 | Сайт TechnoMart | Даёт слот в шаблоне карточки и заранее поставляет резервный rule-based блок в кэш платформы |
+      | 3 | Recommendation Widget | Отображает блок в карточке товара |
+      | 4 | Recommendation Backend | Псевдонимизирует пользователя и при отказе читает резервный блок из кэша |
+      | 5 | Компоненты Serving API | Собирают ответ из набора кандидатов и персонального слоя |
+      | 6 | Recommendations Cache, SQL DB | Источники набора, сегмента, исключений и остатков |
+
+      ### 3. Ветвления и деградации
+
+      | Блок | Условие | Что происходит |
+      |---|---|---|
+      | `alt` по кэшу | Набор найден | `candidate_strategy: segment_cf`, персональная сборка поверх сегментного набора |
+      | `alt` по кэшу | Набора нет | `candidate_strategy: popular_fallback`, отдаётся предрассчитанное популярное |
+      | `alt` по тексту | Версия совпала | Применяется предгенерированное описание |
+      | `alt` по тексту | Набор изменился | Подставляется статический шаблон без ссылок на товары |
+      | `catch` | Таймаут или 503 | Backend читает резервный rule-based блок из Recommendations Cache (наполнен фоново с сайта) |
+      """
+
+    customer -> bitrix {
+      title 'Открывает карточку товара SKU-100234'
+      technology 'HTTPS'
+      description 'Обычная навигация по витрине; платформа в этом шаге не участвует'
+    }
+    bitrix -> platform.widget {
+      title 'Встраивает тег виджета, ссылающийся на бандл платформы, в слот шаблона карточки'
+      description 'Ядро Bitrix не изменяется: в слот шаблона добавлен HTML-тег; сам бандл браузер загрузит с Backend отдельным запросом'
+    }
+    platform.widget -> platform.backend {
+      title 'GET /api/widget/recommendations'
+      technology 'HTTPS'
+      description 'Вызов публичной границы платформы; при первом обращении Backend выставит собственную сессионную cookie в Set-Cookie'
+    }
+
+    try 'бюджет ответа 200 мс' {
+      platform.backend -> platform.serving.controller {
+        title 'GET /v1/recommendations, X-User-Ref в заголовке'
+        technology 'HTTPS'
+        description 'Backend преобразует сессионную cookie в псевдонимный X-User-Ref: персональные данные не покидают доверенный контур, ML-контур получает только псевдоним'
+      }
+      platform.serving.controller -> platform.serving.orchestrator {
+        title 'Валидирует параметры и передаёт запрос'
+        description 'Внутрипроцессный вызов; контроллер следит за бюджетом ответа 200 мс'
+      }
+      platform.serving.orchestrator -> platform.serving.segments {
+        title 'Запрашивает сегмент покупателя'
+        description 'Внутрипроцессный вызов; сегмент определяется по X-User-Ref, при его отсутствии подставляется seg-anon'
+      }
+      platform.serving.segments -> platform.sqldb {
+        title 'Читает витрину сегментов по X-User-Ref'
+        technology 'SQL'
+        description 'Чтение по ключу из PostgreSQL; витрину сегментов публикует офлайн-пайплайн'
+      }
+      platform.serving.orchestrator <- platform.serving.segments {
+        title 'seg-7 либо seg-anon'
+        description 'Аноним получает сегментную выдачу без персональных исключений'
+      }
+      platform.serving.orchestrator -> platform.serving.cacheClient {
+        title 'Запрашивает набор кандидатов сегмента'
+        description 'Внутрипроцессный вызов; кэшируется набор кандидатов сегмента, а не итоговая выдача, поэтому персональный слой применяется на каждом запросе'
+      }
+
+      alt {
+        when 'набор есть: candidate_strategy = segment_cf' {
+          platform.serving.cacheClient -> platform.cache {
+            title 'GET cand:SKU-100234:seg-7'
+            technology 'Redis protocol'
+            description 'Ключ — «товар плюс сегмент плюс версия»; версия в ключе не даёт тексту и набору рассогласоваться'
+          }
+          platform.serving.orchestrator <- platform.serving.cacheClient {
+            title 'Кандидаты сегмента и версия set_version'
+            description 'Двое покупателей одного сегмента получат один набор кандидатов, но разную итоговую выдачу после исключений и ранжирования'
+          }
+        }
+        else 'набора нет: candidate_strategy = popular_fallback' {
+          platform.serving.cacheClient -> platform.cache {
+            title 'GET popular:category-42'
+            technology 'Redis protocol'
+            description 'Промах кэша закрывается предрассчитанным популярным набором категории, а не живым расчётом'
+          }
+          platform.serving.orchestrator <- platform.serving.cacheClient {
+            title 'Предрассчитанное популярное в категории'
+            description 'Выдача остаётся в бюджете 200 мс даже на холодном ключе'
+          }
+        }
+      }
+
+      platform.serving.orchestrator -> platform.serving.exclusions {
+        title 'Убирает купленное офлайн и стоп-листы'
+        description 'Внутрипроцессный вызов; персональные исключения применяются на каждом запросе поверх сегментного набора'
+      }
+      platform.serving.exclusions -> platform.sqldb {
+        title 'Читает офлайн-покупки по X-User-Ref'
+        technology 'SQL'
+        description 'Чтение по ключу из PostgreSQL; офлайн-покупки поступают из синхронизации сайта с 1С через пайплайн, свежесть ограничена циклом 15 минут'
+      }
+      platform.serving.orchestrator -> platform.serving.ranking {
+        title 'Ранжирует по наличию и правилам категории'
+        description 'Внутрипроцессный вызов; короткий список после исключений упорядочивается по остаткам и бизнес-правилам'
+      }
+      platform.serving.ranking -> platform.sqldb {
+        title 'Читает остатки и бизнес-правила'
+        technology 'SQL'
+        description 'Чтение по ключу из PostgreSQL; товар без остатка понижается или исключается из выдачи'
+      }
+      platform.serving.orchestrator -> platform.serving.descriptions {
+        title 'Запрашивает текст для итогового набора'
+        description 'Внутрипроцессный вызов; живого вызова LLM нет — тексты предгенерированы офлайн и лежат в кэше под версией набора'
+      }
+      platform.serving.descriptions -> platform.serving.cacheClient {
+        title 'Читает текст по версии набора'
+        description 'Внутрипроцессный вызов; текст применяется, только если его версия совпала с версией итогового набора после исключений и ранжирования'
+      }
+
+      alt {
+        when 'версия текста совпала с версией итогового набора' {
+          platform.serving.orchestrator <- platform.serving.descriptions {
+            title 'Предгенерированный текст'
+            description 'Текст гарантированно ссылается только на товары, оставшиеся в выдаче'
+          }
+        }
+        else 'набор изменился после исключений и ранжирования' {
+          platform.serving.orchestrator <- platform.serving.descriptions {
+            title 'Статический шаблон без ссылок на товары'
+            description 'Рассогласование версий закрывается шаблоном: описание не упоминает конкретные товары и не может соврать'
+          }
+        }
+      }
+
+      platform.serving.controller <- platform.serving.orchestrator {
+        title 'Собранный ответ'
+        description 'Итоговая выдача: items, candidate_strategy, set_version и текст объяснения'
+      }
+      platform.backend <- platform.serving.controller {
+        title '200 OK'
+        technology 'HTTPS'
+        description 'Ответ в бюджете 200 мс: на критическом пути только чтения по ключу из кэша и SQL DB'
+      }
+    }
+    catch 'таймаут 200 мс или 503' {
+      platform.backend -> platform.cache {
+        title 'GET rb:SKU-100234:product_card_cross_sell'
+        technology 'Redis protocol'
+        description 'Резервный rule-based блок синхронизирован с сайтом заранее: чтение из кэша занимает единицы миллисекунд, и бюджет ответа выдерживается даже в деградации'
+      }
+      platform.backend <- platform.cache {
+        title 'Подборка «с этим товаром часто покупают», candidate_strategy = rule_based'
+        description 'Блок не персонализирован (personalization_level: none), поэтому ключ кэша — «товар плюс слот»'
+      }
+    }
+
+    platform.widget <- platform.backend {
+      title '200 OK, JSON'
+      technology 'HTTPS'
+      description 'Деградация прозрачна для виджета: и штатная, и резервная выдача приходят кодом 200, различие — в маркере candidate_strategy'
+    }
+    customer <- platform.widget {
+      title 'Видит блок рекомендаций с объяснением'
+      description 'Пустого места на странице нет ни в штатном режиме, ни при отказе Serving API'
+    }
+  }
+
+}

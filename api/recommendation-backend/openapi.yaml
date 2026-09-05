@@ -1,0 +1,256 @@
+openapi: 3.1.0
+info:
+  title: TechnoMart Recommendation Backend API
+  version: 1.0.0
+  summary: API сервиса Recommendation Backend
+  description: |
+    Публичная граница платформы персональных рекомендаций. Используется
+    виджетом рекомендаций из браузера покупателя со страниц сайта TechnoMart.
+
+    Раздача JS-бандла виджета (`GET /widget.js`) в спецификацию не входит:
+    это статический ассет, а не API; его доставка описана в модели C4.
+
+    Причины отделения Backend от Serving:
+
+    1. Backend является границей персональных данных и преобразует сессионную cookie в псевдонимный `X-User-Ref`.
+       При объединении сервисов сессионная cookie приникла бы в ML-контур и он получил бы возможность восстановить личность покупателя, что нарушило бы требование «ПДн не покидают доверенный контур».
+    2. Backend обеспечивает фолбэк на резервный rule-based блок при таймауте 200 мс или ошибках Serving (например, `503`).
+       Блок не персонализирован, поэтому Backend синхронизирует его с сайтом TechnoMart в фоне и читает из локального кэша:
+       бюджет ответа 200 мс выдерживается и в деградации, а живой запрос к сайту остаётся только при холодном кэше.
+       При объединении сервисов в случае сбоя Serving-логики фолбэк был бы невозможен, и на странице осталась бы пустая рамка виджета.
+
+    Сессия: при первом ответе сервис выставляет собственную cookie
+    (`Set-Cookie`, кросс-доменная: `SameSite=None; Secure; HttpOnly`), далее
+    браузер передаёт её автоматически.
+
+    Аутентификации по ключу нет: браузер не может хранить секрет. Защита —
+    rate-limit на сессию и IP, CORS с `Access-Control-Allow-Credentials`
+    и сетевые ограничения контура.
+
+servers:
+  - url: https://rec.technomart.example
+    description: Промышленный контур
+  - url: http://localhost:4011
+    description: Мок Prism сервиса Recommendation Backend из ../docker-compose.yaml
+
+tags:
+  - name: widget
+    description: Операции виджета рекомендаций
+
+paths:
+  /api/widget/recommendations:
+    get:
+      tags: [widget]
+      operationId: getWidgetRecommendations
+      summary: Предоставление подборки рекомендаций для виджета
+      description: |
+        Предоставляет полученную от Serving подборку или — в случае отказа
+        Serving (по таймауту 200 мс или по причине ошибки) — резервный
+        rule-based блок из локального кэша, который фоново синхронизируется
+        с сайтом TechnoMart; тогда ответ содержит маркер
+        `candidate_strategy: rule_based`.
+
+        В случае анонимного вызова, без сессионной cookie, возвращается
+        сегментная выдача, а персональные исключения не применяются; сервис
+        выставляет новую сессию в `Set-Cookie`, и последующие запросы браузер
+        выполняет с ней сам.
+      security:
+        - sessionCookie: []
+        - {}
+      parameters:
+        - name: slot
+          in: query
+          required: true
+          description: Место на странице, для которого нужна подборка
+          schema:
+            $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/Slot'
+        - name: product_id
+          in: query
+          required: false
+          description: Артикул товара. Обязателен для слота product_card_cross_sell
+          schema:
+            type: string
+            pattern: '^SKU-[0-9]{6}$'
+            examples: ['SKU-100234']
+        - name: limit
+          in: query
+          required: false
+          description: Сколько товаров вернуть
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 6
+      responses:
+        '200':
+          description: |
+            Подборка получена. Тот же код отдаётся, когда выдача пришла из
+            резервного rule-based блока (прочитанного из локального кэша):
+            для виджета это штатный ответ,
+            а не ошибка; признак деградации — `candidate_strategy: rule_based`
+            и `explanation.source: template`
+          headers:
+            Set-Cookie:
+              description: |
+                Сессионная cookie платформы. Выставляется, если запрос её не
+                содержал: `tm_rec_session=<значение>; SameSite=None; Secure; HttpOnly`
+              schema:
+                type: string
+            Cache-Control:
+              description: |
+                Ответ персонализирован — к нему применены исключения конкретного
+                пользователя, поэтому кэш только приватный. Значение public позволило бы
+                промежуточному кэшу отдать подборку одного покупателя другому
+              schema:
+                type: string
+                examples: ['private, max-age=60']
+            Vary:
+              description: Заголовки, входящие в ключ кэша
+              schema:
+                type: string
+                examples: ['Cookie, Accept-Encoding']
+          content:
+            application/json:
+              schema:
+                $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/RecommendationResponse'
+              examples:
+                servingOk:
+                  summary: Штатный ответ, проксированный от Serving API
+                  value:
+                    request_id: 7e4a1c2f-9b3d-4a51-8c7e-2f1d5b8a0c34
+                    slot: product_card_cross_sell
+                    candidate_strategy: segment_cf
+                    personalization_level: identified
+                    set_version: v42-9f2c1a7b
+                    generated_at: '2026-08-16T03:15:00Z'
+                    model_version: item2item-2026.08.14
+                    explanation:
+                      title: Аксессуары к вашему ноутбуку
+                      text: Эти мыши и подставки подходят к выбранной модели по разъёму и весу.
+                      source: llm_pregenerated
+                    items:
+                      - product_id: SKU-200871
+                        title: Мышь беспроводная Logitech M330
+                        price: 2490
+                        currency: RUB
+                        image_url: https://cdn.technomart.example/i/SKU-200871.jpg
+                        score: 0.82
+                        reason_code: bought_together
+                ruleBasedFallback:
+                  summary: Serving API не ответил в бюджет 200 мс, отдан резервный rule-based блок из локального кэша
+                  value:
+                    request_id: 8f5b2d3e-0c4e-5b62-9d8f-3a2e6c9b1d45
+                    slot: product_card_cross_sell
+                    candidate_strategy: rule_based
+                    personalization_level: none
+                    set_version: rb-static
+                    generated_at: '2026-08-16T03:16:20Z'
+                    model_version: rule-based-bitrix
+                    explanation:
+                      title: С этим товаром часто покупают
+                      text: Популярные сопутствующие товары по правилам каталога.
+                      source: template
+                    items:
+                      - product_id: SKU-411002
+                        title: Кабель HDMI 2.1, 2 м
+                        price: 990
+                        currency: RUB
+                        score: 0.5
+                        reason_code: bought_together
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: tm_rec_session
+      description: |
+        Сессионная cookie платформы: HttpOnly, Secure, SameSite=None. Единственный
+        носитель идентичности в этом контракте. Backend преобразует сессию
+        в псевдонимный X-User-Ref с солью, хранимой вне ML-контура, и только его
+        передаёт дальше в Recommendation Serving API.
+        Схема помечена необязательной: анонимный вызов допустим и даёт сегментную выдачу
+  responses:
+    BadRequest:
+      description: Параметры запроса не прошли валидацию
+      content:
+        application/problem+json:
+          schema:
+            $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/Problem'
+          examples:
+            missingProductId:
+              summary: Для слота карточки товара не передан product_id
+              value:
+                type: https://rec.technomart.example/problems/invalid-parameter
+                title: Некорректный параметр запроса
+                status: 400
+                detail: Параметр product_id обязателен для слота product_card_cross_sell
+                request_id: 3f2a1b0c-7d6e-4915-a8b3-0c1d2e3f4a5b
+    TooManyRequests:
+      description: |
+        Превышен лимит запросов от одной сессии или адреса. Виджет обязан
+        не повторять запрос до истечения Retry-After и оставить блок в прежнем состоянии
+      headers:
+        Retry-After:
+          description: Через сколько секунд повторить запрос
+          schema:
+            type: integer
+            examples: [30]
+      content:
+        application/problem+json:
+          schema:
+            $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/Problem'
+          examples:
+            rateLimited:
+              summary: Исчерпан лимит сессии
+              value:
+                type: https://rec.technomart.example/problems/rate-limited
+                title: Слишком много запросов
+                status: 429
+                detail: Лимит запросов к блоку рекомендаций исчерпан
+                request_id: b2d41f09-6c37-4a8e-8f52-9e0a3c1d7b64
+    InternalError:
+      description: |
+        Внутренняя ошибка самого Backend. Отказы Serving API сюда не попадают:
+        они закрываются резервным блоком и отдаются кодом 200
+        с маркером `candidate_strategy: rule_based`
+      content:
+        application/problem+json:
+          schema:
+            $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/Problem'
+          examples:
+            unexpected:
+              summary: Непредвиденная ошибка обработки
+              value:
+                type: https://rec.technomart.example/problems/internal-error
+                title: Внутренняя ошибка
+                status: 500
+                request_id: 5a7c9e13-0b84-42f6-91d5-3e7f8a2c6014
+    Unavailable:
+      description: |
+        Recommendation Serving API недоступен, а резервный rule-based блок
+        отсутствует в локальном кэше (холодный кэш, например новый SKU) и не
+        может быть получен с сайта TechnoMart. Резервный блок закэширован, поэтому
+        этот код редок: недоступность сайта сама по себе к нему не приводит.
+        По этому коду виджет скрывает блок рекомендаций, не показывая пустое место
+        на странице
+      content:
+        application/problem+json:
+          schema:
+            $ref: '../recommendation-serving-api/openapi.yaml#/components/schemas/Problem'
+          examples:
+            fallbackDown:
+              summary: Serving недоступен, кэш резервного блока холодный, сайт не отвечает
+              value:
+                type: https://rec.technomart.example/problems/dependency-unavailable
+                title: Сервис временно недоступен
+                status: 503
+                detail: Recommendation Serving API недоступен, резервный блок отсутствует в кэше и не получен с сайта
+                request_id: 7c3e5d81-9a04-4b26-8e73-1d2f6a9c4b57

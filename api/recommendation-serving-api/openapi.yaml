@@ -1,0 +1,411 @@
+openapi: 3.1.0
+info:
+  title: TechnoMart Recommendation Serving API
+  version: 1.0.0
+  summary: API сервиса Recommendation Serving
+  description: |
+    Используется сервисом Recommendation Backend, наружу не публикуется.
+
+    Транспорт — HTTPS. Клиент аутентифицируется ключом
+    в заголовке X-Api-Key; доступ к сервису дополнительно ограничен сетевой
+    политикой — принимаются соединения только от service account контейнера
+    Recommendation Backend.
+
+    Причины отделения Backend от Serving:
+
+    1. Backend является границей персональных данных и преобразует сессионную cookie в псевдонимный `X-User-Ref`.
+       При объединении сервисов сессионная cookie приникла бы в ML-контур и он получил бы возможность восстановить личность покупателя, что нарушило бы требование «ПДн не покидают доверенный контур».
+    2. Backend обеспечивает фолбэк на резервный rule-based блок у сайта TechnoMart при таймауте 200 мс или ошибках Serving (например, `503`).
+       При объединении сервисов в случае сбоя Serving-логики фолбэк был бы невозможен, и на странице осталась бы пустая рамка виджета.
+
+servers:
+  - url: https://ai-rec.internal.technomart.example
+    description: Промышленный контур
+  - url: http://localhost:4010
+    description: Мок Prism сервиса Recommendation Serving API из ../docker-compose.yaml
+
+tags:
+  - name: recommendations
+    description: Выдача подборок товаров
+
+security:
+  - apiKey: []
+
+paths:
+  /v1/recommendations:
+    get:
+      tags: [recommendations]
+      operationId: getRecommendations
+      summary: Предоставление подборки рекомендаций для слота
+      description: |
+        Возвращает готовую подборку товаров для указанного слота.
+
+        Бюджет ответа — 200 мс на p95.
+
+        Рекомендации рассчитываются офлайн и отдаются
+        из кэша, живого вызова LLM в обработке запроса нет. Тексты подборок
+        предгенерированы; при промахе кэша подставляется статический шаблон.
+
+        В запросе передаётся псевдонимный идентификатор user_ref, а не персональные
+        данные покупателя.
+      parameters:
+        - name: slot
+          in: query
+          required: true
+          description: Место на странице, для которого нужна подборка
+          schema:
+            $ref: '#/components/schemas/Slot'
+        - name: product_id
+          in: query
+          required: false
+          description: Артикул товара. Обязателен для слота product_card_cross_sell
+          schema:
+            type: string
+            pattern: '^SKU-[0-9]{6}$'
+            examples: ['SKU-100234']
+        - name: X-User-Ref
+          in: header
+          required: false
+          description: |
+            Псевдонимный идентификатор пользователя или сессии, выданный Recommendation Backend.
+            Передаётся заголовком, а не параметром запроса: в query-строке он осел бы
+            в access-логах прокси и в Referer. Псевдонимизация не делает данные
+            анонимными — правила формирования, ротации и хранения соответствий
+            описаны в эксплуатационной документации платформы
+          schema:
+            type: string
+            maxLength: 64
+            examples: ['u_9f2c1a7b4e']
+        - name: limit
+          in: query
+          required: false
+          description: Сколько товаров вернуть
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 6
+      responses:
+        '200':
+          $ref: '#/components/responses/Recommendations'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: |
+        Ключ сервиса-клиента. Выдаётся на контейнер Recommendation Backend и является
+        единственным механизмом аутентификации клиента на уровне приложения.
+        Хранится в секрет-менеджере и не попадает в логи; для ротации без простоя
+        сервис одновременно принимает две действующие пары ключей
+  schemas:
+    Slot:
+      type: string
+      description: Слот размещения подборки
+      enum: [product_card_cross_sell]
+      examples: ['product_card_cross_sell']
+    CandidateStrategy:
+      type: string
+      description: |
+        Происхождение набора кандидатов, а не степень персонализации.
+        Кандидаты рассчитываются офлайн для пары «товар плюс сегмент», поэтому
+        персональной является не сама подборка, а применённый к ней слой исключений
+      enum: [segment_cf, content_based, popular_fallback, rule_based]
+    PersonalizationLevel:
+      type: string
+      description: |
+        Какой персональный слой удалось применить. Уровень определяется не желанием
+        сервиса, а доступной идентичностью: none — сегмент seg-anon, исключений нет
+        (идентификатор не передан либо цепь до PostgreSQL разомкнута); session —
+        покупатель узнан по сессии, исключается уже виденное, но связи с client_id
+        из 1С нет (данные об офлайн-покупках поступают в платформу через
+        синхронизацию сайта, а не напрямую из 1С), поэтому офлайн-покупки
+        недоступны; identified — покупатель связан с client_id из 1С, исключается
+        и виденное, и купленное офлайн
+      enum: [none, session, identified]
+      examples: ['identified']
+    ExplanationSource:
+      type: string
+      description: Источник текста. llm_pregenerated — предгенерирован офлайн, template — статический шаблон
+      enum: [llm_pregenerated, template]
+    Explanation:
+      type: object
+      description: |
+        Объяснение подборки. Генерируется офлайн под конкретную версию набора кандидатов
+        и применяется только при совпадении set_version. Если после персональных
+        исключений и ранжирования состав изменился, подставляется статический шаблон,
+        не ссылающийся на конкретные товары
+      required: [title, text, source]
+      properties:
+        title:
+          type: string
+          maxLength: 120
+          examples: ['Аксессуары к вашему ноутбуку']
+        text:
+          type: string
+          maxLength: 400
+          examples: ['Эти мыши и подставки подходят к выбранной модели по разъёму и весу.']
+        source:
+          $ref: '#/components/schemas/ExplanationSource'
+    RecommendationItem:
+      type: object
+      required: [product_id, title, price, currency, score]
+      properties:
+        product_id:
+          type: string
+          examples: ['SKU-200871']
+        title:
+          type: string
+          examples: ['Мышь беспроводная Logitech M330']
+        price:
+          type: number
+          minimum: 0
+          examples: [2490]
+        currency:
+          type: string
+          enum: [RUB]
+        image_url:
+          type: string
+          format: uri
+          examples: ['https://cdn.technomart.example/i/SKU-200871.jpg']
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Уверенность модели, используется только для отладки
+          examples: [0.82]
+        reason_code:
+          type: string
+          description: Машинная причина попадания товара в подборку
+          enum: [bought_together, similar_item, popular_in_category]
+    RecommendationResponse:
+      type: object
+      description: |
+        Итоговая выдача. Кэшируется не она, а набор кандидатов сегмента:
+        персональные исключения и ранжирование применяются на каждом запросе,
+        поэтому два пользователя одного сегмента получают разные items
+        при одинаковых candidate_strategy и set_version
+      required: [request_id, slot, candidate_strategy, personalization_level,
+                 set_version, generated_at, model_version, items]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        slot:
+          $ref: '#/components/schemas/Slot'
+        candidate_strategy:
+          $ref: '#/components/schemas/CandidateStrategy'
+        personalization_level:
+          $ref: '#/components/schemas/PersonalizationLevel'
+        set_version:
+          type: string
+          description: |
+            Версия набора кандидатов. Текст подборки публикуется под этой же версией;
+            при расхождении используется статический шаблон
+          examples: ['v42-9f2c1a7b']
+        generated_at:
+          type: string
+          format: date-time
+          description: Когда набор кандидатов был рассчитан офлайн, а не когда отдан ответ
+        model_version:
+          type: string
+          description: Версия модели, позволяющая откат при деградации качества
+          examples: ['item2item-2026.08.14']
+        explanation:
+          $ref: '#/components/schemas/Explanation'
+        items:
+          type: array
+          minItems: 0
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/RecommendationItem'
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 9457
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          examples: ['https://ai-rec.internal.technomart.example/problems/invalid-parameter']
+        title:
+          type: string
+          examples: ['Некорректный параметр запроса']
+        status:
+          type: integer
+        detail:
+          type: string
+          examples: ['Параметр product_id обязателен для слота product_card_cross_sell']
+        instance:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+  responses:
+    Recommendations:
+      description: Подборка получена
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecommendationResponse'
+          examples:
+            cacheHit:
+              summary: Набор кандидатов сегмента из кэша, персональные исключения применены, текст версии набора совпал
+              value:
+                request_id: 7e4a1c2f-9b3d-4a51-8c7e-2f1d5b8a0c34
+                slot: product_card_cross_sell
+                candidate_strategy: segment_cf
+                personalization_level: identified
+                set_version: v42-9f2c1a7b
+                generated_at: '2026-08-16T03:15:00Z'
+                model_version: item2item-2026.08.14
+                explanation:
+                  title: Аксессуары к вашему ноутбуку
+                  text: Эти мыши и подставки подходят к выбранной модели по разъёму и весу.
+                  source: llm_pregenerated
+                items:
+                  - product_id: SKU-200871
+                    title: Мышь беспроводная Logitech M330
+                    price: 2490
+                    currency: RUB
+                    image_url: https://cdn.technomart.example/i/SKU-200871.jpg
+                    score: 0.82
+                    reason_code: bought_together
+                  - product_id: SKU-300145
+                    title: Подставка для ноутбука Ergo Stand
+                    price: 1890
+                    currency: RUB
+                    score: 0.64
+                    reason_code: similar_item
+            popularFallback:
+              summary: Набора сегмента нет, отдано предрассчитанное популярное; персональный слой не применялся
+              value:
+                request_id: c1b9d8e7-2a34-4f60-9d11-77aa3c5e9012
+                slot: product_card_cross_sell
+                candidate_strategy: popular_fallback
+                personalization_level: none
+                set_version: pop-c42-2026.08.16
+                generated_at: '2026-08-16T09:02:11Z'
+                model_version: popularity-2026.08.16
+                explanation:
+                  title: Часто покупают вместе
+                  text: Популярные товары этой категории за последнюю неделю.
+                  source: template
+                items:
+                  - product_id: SKU-411002
+                    title: Кабель HDMI 2.1, 2 м
+                    price: 990
+                    currency: RUB
+                    score: 0.31
+                    reason_code: popular_in_category
+    BadRequest:
+      description: Параметры запроса не прошли валидацию
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            missingProductId:
+              summary: Для слота карточки товара не передан product_id
+              value:
+                type: https://ai-rec.internal.technomart.example/problems/invalid-parameter
+                title: Некорректный параметр запроса
+                status: 400
+                detail: Параметр product_id обязателен для слота product_card_cross_sell
+                request_id: 3f2a1b0c-7d6e-4915-a8b3-0c1d2e3f4a5b
+    Unauthorized:
+      description: |
+        Ключ в заголовке X-Api-Key отсутствует, неизвестен или отозван
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unknownKey:
+              summary: Ключ не опознан
+              value:
+                type: https://ai-rec.internal.technomart.example/problems/unauthorized
+                title: Клиент не аутентифицирован
+                status: 401
+                detail: Ключ в заголовке X-Api-Key отсутствует или отозван
+                request_id: 9d1c4b7a-2f83-4e51-b0c6-5a7e8f2d1b30
+    NotFound:
+      description: Товар с указанным product_id отсутствует в снимке каталога
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unknownProduct:
+              summary: Товара нет в суточном снимке каталога
+              value:
+                type: https://ai-rec.internal.technomart.example/problems/product-not-found
+                title: Товар не найден
+                status: 404
+                detail: Товар SKU-999999 отсутствует в снимке каталога
+                request_id: 4e8f0a21-7b35-4c96-8d12-3f6a9b4c7e08
+    TooManyRequests:
+      description: Превышен лимит запросов от одного клиента
+      headers:
+        Retry-After:
+          description: Через сколько секунд повторить запрос
+          schema:
+            type: integer
+            examples: [30]
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            rateLimited:
+              summary: Исчерпан лимит клиента
+              value:
+                type: https://ai-rec.internal.technomart.example/problems/rate-limited
+                title: Слишком много запросов
+                status: 429
+                detail: Лимит запросов от Recommendation Backend исчерпан
+                request_id: b2d41f09-6c37-4a8e-8f52-9e0a3c1d7b64
+    InternalError:
+      description: Внутренняя ошибка сервиса
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unexpected:
+              summary: Непредвиденная ошибка обработки
+              value:
+                type: https://ai-rec.internal.technomart.example/problems/internal-error
+                title: Внутренняя ошибка
+                status: 500
+                request_id: 5a7c9e13-0b84-42f6-91d5-3e7f8a2c6014
+    Unavailable:
+      description: |
+        Зависимость недоступна или превышен бюджет времени. Recommendation Backend обязан
+        по этому коду показать резервный rule-based блок, а не пустое место на странице
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            cacheDown:
+              summary: Кэш наборов недоступен, ответ деградирует
+              value:
+                type: https://ai-rec.internal.technomart.example/problems/dependency-unavailable
+                title: Сервис временно недоступен
+                status: 503
+                detail: Кэш наборов кандидатов недоступен, подборку собрать нельзя
+                request_id: 7c3e5d81-9a04-4b26-8e73-1d2f6a9c4b57

@@ -1,0 +1,41 @@
+specification {
+  element person {
+    style {
+      shape person
+    }
+  }
+  element system
+  element container
+  element component
+  element database {
+    style {
+      shape storage
+    }
+  }
+  tag external
+
+  // Ось «что на критическом пути ответа». Сам тег цвета не несёт:
+  // у тега свойство color принимает только литерал и красит его плашку,
+  // а не элемент. Покраска элементов — правилом стиля ниже.
+  tag hotpath
+  tag async
+}
+
+// Объявлено один раз и подключается строкой `global style contours`
+// в каждом блоке views. Рамки не используются: на диаграмме контейнеров
+// они подменяли бы границу системы.
+//
+// Стиль самой платформы сюда не входит сознательно: глобальное правило
+// протекало бы на диаграмму системного контекста, где платформа должна
+// оставаться акцентной. Прозрачная заливка границы задана локально,
+// в виде platform--containers (см. views.c4).
+global {
+  styleGroup contours {
+    style element.tag = #hotpath {
+      color green
+    }
+    style element.tag = #async {
+      color amber
+    }
+  }
+}

@@ -1,0 +1,13 @@
+apis:
+  recommendation-serving-api:
+    root: recommendation-serving-api/openapi.yaml
+  recommendation-backend-api:
+    root: recommendation-backend/openapi.yaml
+extends:
+  - recommended
+rules:
+  operation-4xx-response: error
+  operation-operationId: error
+  operation-summary: error
+  no-server-example.com: off
+  security-defined: error

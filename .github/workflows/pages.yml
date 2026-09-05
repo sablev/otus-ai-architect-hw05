@@ -1,0 +1,61 @@
+name: Build and deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Сайт отдаётся из подкаталога /<имя репозитория>/, поэтому --base
+      # вычисляется из GITHUB_REPOSITORY, а не зашит литералом.
+      - name: Build LikeC4 static site
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w
+          likec4/likec4:1.59.2
+          build --base "/${GITHUB_REPOSITORY#*/}/" -o /w/site /w/c4
+
+      # GitHub не рендерит OpenAPI нативно, поэтому рядом с диаграммами
+      # публикуются две страницы SwaggerUI. Спеки кладутся с сохранением
+      # относительной раскладки: backend-спека ссылается на serving-спеку
+      # внешними $ref вида ../recommendation-serving-api/openapi.yaml.
+      - name: Add SwaggerUI pages for API specs
+        run: |
+          set -euo pipefail
+          for d in recommendation-serving-api recommendation-backend; do
+            mkdir -p "site/api/$d"
+            docker run --rm --entrypoint sh \
+              -v "$GITHUB_WORKSPACE/site/api/$d:/out" \
+              swaggerapi/swagger-ui:v5.32.13 \
+              -c "cp -r /usr/share/nginx/html/. /out/"
+            cp "api/$d/openapi.yaml" "site/api/$d/openapi.yaml"
+            cp .github/swagger-initializer.js "site/api/$d/swagger-initializer.js"
+            rm -f "site/api/$d"/log.*.txt "site/api/$d"/50x.html \
+                  "site/api/$d"/oauth2-redirect.html "site/api/$d"/oauth2-redirect.js
+          done
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

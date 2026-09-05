@@ -12,13 +12,13 @@ OTUS «AI Architect» (ДЗ 05).
 - [Диаграмма контейнеров (C2)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--containers)
 - [Компоненты Recommendation Serving API (C3)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--recommendation-serving-api--components)
 - [Компоненты Description Generation Worker (C3)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--description-generation-worker--components)
-- [Сценарий «Пользователь запрашивает рекомендацию» (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--request-recommendation--dynamic)
-- [Сценарий офлайн-предгенерации описаний (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--pregenerate-descriptions--dynamic)
+- [Сценарий «Пользователь запрашивает рекомендацию» (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--request-recommendation--dynamic/?dynamic=sequence)
+- [Сценарий офлайн-предгенерации описаний (диаграмма последовательности)](https://sablev.github.io/otus-ai-architect-hw05/view/platform--pregenerate-descriptions--dynamic/?dynamic=sequence)
 
 Спецификации API в SwaggerUI:
 
-- **Recommendation Serving API**: <https://sablev.github.io/otus-ai-architect-hw05/api/recommendation-serving-api/>
-- **Recommendation Backend API**: <https://sablev.github.io/otus-ai-architect-hw05/api/recommendation-backend/>
+- [Recommendation Serving API](https://sablev.github.io/otus-ai-architect-hw05/api/recommendation-serving-api/) — внутренний контракт, вызывается Backend по `X-Api-Key`
+- [Recommendation Backend API](https://sablev.github.io/otus-ai-architect-hw05/api/recommendation-backend/) — публичная граница для браузерного виджета
 
 ## Состав репозитория
 

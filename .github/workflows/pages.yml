@@ -44,7 +44,10 @@ jobs:
               swaggerapi/swagger-ui:v5.32.13 \
               -c "cp -r /usr/share/nginx/html/. /out/"
             cp "api/$d/openapi.yaml" "site/api/$d/openapi.yaml"
-            cp .github/swagger-initializer.js "site/api/$d/swagger-initializer.js"
+            # -f: в дистрибутиве SwaggerUI уже есть свой swagger-initializer.js,
+            # записанный контейнером от root; простой cp не может его
+            # перезаписать, а cp -f удаляет и создаёт заново.
+            cp -f .github/swagger-initializer.js "site/api/$d/swagger-initializer.js"
             rm -f "site/api/$d"/log.*.txt "site/api/$d"/50x.html \
                   "site/api/$d"/oauth2-redirect.html "site/api/$d"/oauth2-redirect.js
           done

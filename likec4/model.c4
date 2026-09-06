@@ -42,7 +42,7 @@ model {
       title 'Recommendation Backend'
       icon tech:go
       technology 'Go, HTTP API'
-      description 'Раздаёт бандл виджета, держит сессию, псевдонимизирует пользователя, назначает его в control/treatment A/B-пилота и при отказе Serving API отдаёт резервный rule-based блок из локального кэша, синхронизируемого с сайтом в фоне'
+      description 'Раздаёт бандл виджета, держит сессию, псевдонимизирует пользователя и стабильно (по хэшу сессии) назначает рукав A/B-пилота: control получает существующий rule-based блок сайта, treatment — AI-подборку Serving API; при отказе Serving отдаётся резервный rule-based блок из локального кэша, но в аналитике он остаётся рукавом treatment (intent-to-treat)'
     }
 
     container serving {
@@ -50,7 +50,7 @@ model {
       title 'Recommendation Serving API'
       icon tech:python
       technology 'Python, FastAPI'
-      description 'Отдаёт подборку из кэша, применяя персональные исключения и ранжирование в бюджете 200 мс'
+      description 'Отдаёт подборку из кэша, определяя none, session или identified внутренним Identity Resolver по псевдонимному профилю; применяет персональные исключения и ранжирование в бюджете 200 мс, не получая сырой client_id'
     }
 
     container generator {
@@ -85,6 +85,14 @@ model {
       description 'Принимает от виджета события показов, кликов и переходов, привязывает их к request_id подборки и пишет в сырой лог; вне критического пути ответа'
     }
 
+    container analytics {
+      #async
+      title 'Experiment Analytics'
+      icon tech:python
+      technology 'Python, SQL'
+      description 'Считает метрики пилота по рукавам: CTR и конверсию — по событиям, AOV — по связке событий с заказами; отвечает на вопрос DoD MVP — статистически значимый uplift конверсии'
+    }
+
     database cache {
       title 'Recommendations Cache'
       icon tech:redis
@@ -96,7 +104,7 @@ model {
       title 'SQL DB'
       icon tech:postgresql
       technology 'PostgreSQL 17'
-      description 'Хранит каталог, сегменты, персональные исключения и остатки'
+      description 'Хранит каталог, сегменты, остатки, псевдонимные профили и разрешённые производные данные: персональные исключения и факты заказов с суммами; сырой client_id в Serving и его логи не передаётся'
     }
 
     database vectordb {
@@ -110,7 +118,7 @@ model {
       title 'Raw Event Store'
       icon tech:postgresql
       technology 'PostgreSQL 17'
-      description 'Сырые поведенческие события с experiment_id и variant: показ, клик, переход; источник для расчёта конверсии и AOV в A/B-пилоте и для офлайн-расчёта наборов'
+      description 'Сырые поведенческие события с experiment_id и variant: показ, клик, переход; источник CTR и конверсии A/B-пилота и сигналов для офлайн-расчёта наборов'
     }
   }
 
@@ -152,9 +160,9 @@ model {
   }
 
   platform.backend -> platform.cache {
-    title 'Читает резервный rule-based блок при отказе Serving API'
+    title 'Читает rule-based блок для control-рукава и при отказе Serving API'
     technology 'Redis protocol'
-    description 'Фолбэк при таймауте 200 мс или ответе 503: чтение по ключу «товар плюс слот» занимает единицы миллисекунд, поэтому бюджет ответа выдерживается и в деградации; блок не персонализирован, поэтому кэшируем; резервный блок отдаётся виджету кодом 200 с маркером candidate_strategy = rule_based'
+    description 'Двойная роль одного чтения: control-рукав пилота всегда получает существующий блок «с этим товаром часто покупают», а treatment — только при таймауте 200 мс или 503 (фолбэк). Чтение по ключу «товар плюс слот» занимает единицы миллисекунд, бюджет ответа выдерживается и в деградации; блок не персонализирован, поэтому кэшируем; отдаётся виджету кодом 200 с маркером candidate_strategy = rule_based'
   }
 
   platform.pipeline -> bitrix {
@@ -175,9 +183,9 @@ model {
   }
 
   platform.pipeline -> platform.sqldb {
-    title 'Пишет снимок каталога, сегменты и исключения'
+    title 'Пишет каталог, сегменты, остатки, псевдонимные профили и производные данные'
     technology 'SQL'
-    description 'Публикует данные персонального слоя в PostgreSQL; читают их компоненты Serving API на критическом пути ответа'
+    description 'Агрегированные чеки публикуются всегда для обучения item-to-item. Псевдонимные профили сессии, производные сессионные признаки и онлайн-исключения из Raw Event Store публикуются в MVP независимо от подтверждения связи сайта с клиентом 1С. Только кросс-системные пользовательские связи и индивидуальные исключения офлайн-покупок публикуются после подтверждения на Discovery; без неё MVP работает на уровнях none/session, а омниканальность остаётся Production/Scale. Каталог, сегменты, разрешённые исключения и остатки читают компоненты Serving API; заказы — Experiment Analytics вне критического пути'
   }
 
   platform.pipeline -> platform.vectordb {
@@ -208,5 +216,17 @@ model {
     title 'Читает события для расчёта наборов'
     technology 'SQL'
     description 'Поведенческие сигналы пилота входят в офлайн-расчёт наборов кандидатов; контур замыкает петлю «выдача → реакция → обучение»'
+  }
+
+  platform.analytics -> platform.eventstore {
+    title 'Читает события пилота'
+    technology 'SQL'
+    description 'Показы, клики и переходы с experiment_id и variant; из них считаются CTR и конверсия рукавов'
+  }
+
+  platform.analytics -> platform.sqldb {
+    title 'Читает заказы и суммы покупок'
+    technology 'SQL'
+    description 'Заказ связывается с рукавом эксперимента по псевдониму X-User-Ref из событий; по суммам заказов считается AOV control/treatment'
   }
 }

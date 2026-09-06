@@ -32,7 +32,7 @@ security:
   - apiKey: []
 
 paths:
-  /v1/recommendations:
+  /get_recommendation:
     get:
       tags: [recommendations]
       operationId: getRecommendations
@@ -57,8 +57,10 @@ paths:
             $ref: '#/components/schemas/Slot'
         - name: product_id
           in: query
-          required: false
-          description: Артикул товара. Обязателен для слота product_card_cross_sell
+          required: true
+          description: >-
+            Артикул товара, для карточки которого нужна подборка. Обязателен:
+            единственный слот MVP, product_card_cross_sell, привязан к карточке товара.
           schema:
             type: string
             pattern: '^SKU-[0-9]{6}$'
@@ -68,6 +70,10 @@ paths:
           required: false
           description: |
             Псевдонимный идентификатор пользователя или сессии, выданный Recommendation Backend.
+            Наличие X-User-Ref не гарантирует уровень identified: Serving API определяет
+            none, session или identified по доступному псевдонимному профилю.
+            Сырой client_id из 1С в этот API не передаётся.
+            В логи Serving API сырой client_id из 1С также не попадает.
             Передаётся заголовком, а не параметром запроса: в query-строке он осел бы
             в access-логах прокси и в Referer. Псевдонимизация не делает данные
             анонимными — правила формирования, ротации и хранения соответствий
@@ -127,14 +133,14 @@ components:
     PersonalizationLevel:
       type: string
       description: |
-        Какой персональный слой удалось применить. Уровень определяется не желанием
-        сервиса, а доступной идентичностью: none — сегмент seg-anon, исключений нет
-        (идентификатор не передан либо цепь до PostgreSQL разомкнута); session —
-        покупатель узнан по сессии, исключается уже виденное, но связи с client_id
-        из 1С нет (данные об офлайн-покупках поступают в платформу через
-        синхронизацию сайта, а не напрямую из 1С), поэтому офлайн-покупки
-        недоступны; identified — покупатель связан с client_id из 1С, исключается
-        и виденное, и купленное офлайн
+        Какой персональный слой удалось применить; он определяется доступным
+        псевдонимным профилем. none — сегмент seg-anon без персональных
+        исключений. session — использованы онлайн-сигналы текущей сессии;
+        офлайн-покупки не исключаются, потому что связь с клиентом 1С не
+        подтверждена.
+        identified — применены онлайн-сигналы и исключения офлайн-покупок.
+        Если профиль отсутствует или недоступен, Serving API деградирует до none
+        и возвращает штатную подборку, а не ошибку 500 или 503.
       enum: [none, session, identified]
       examples: ['identified']
     ExplanationSource:
@@ -287,6 +293,27 @@ components:
                   - product_id: SKU-300145
                     title: Подставка для ноутбука Ergo Stand
                     price: 1890
+                    currency: RUB
+                    score: 0.64
+                    reason_code: similar_item
+            sessionRecognized:
+              summary: Сессия распознана, но связь с клиентом 1С не подтверждена
+              value:
+                request_id: 8a1f6d42-7c53-4a90-b218-93f5e0746c11
+                slot: product_card_cross_sell
+                candidate_strategy: segment_cf
+                personalization_level: session
+                set_version: v42-session-7b31
+                generated_at: '2026-08-16T03:15:00Z'
+                model_version: item2item-2026.08.14
+                explanation:
+                  title: Дополните выбранный товар
+                  text: Подборка учитывает текущую сессию и совместимость товаров.
+                  source: template
+                items:
+                  - product_id: SKU-200871
+                    title: Мышь беспроводная Logitech M330
+                    price: 2490
                     currency: RUB
                     score: 0.64
                     reason_code: similar_item

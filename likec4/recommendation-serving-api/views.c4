@@ -22,15 +22,16 @@ views {
       |---|---|---|
       | 1 | Recommendation Controller | Принимает запрос, валидирует параметры и следит за бюджетом времени |
       | 2 | Recommendation Orchestrator | Задаёт порядок шагов ответа и собирает итоговую выдачу |
-      | 3 | Segment Resolver | Определяет сегмент по `X-User-Ref`, иначе подставляет `seg-anon` |
-      | 4 | Cache Client | Читает наборы и тексты по ключу «товар плюс сегмент плюс версия» |
-      | 5 | Exclusion Filter | Убирает купленное офлайн, уже виденное и стоп-листы |
-      | 6 | Ranking Engine | Ранжирует короткий список по наличию и правилам категории |
-      | 7 | Description Provider | Отдаёт текст при совпадении версии набора |
+      | 3 | Identity Resolver | Определяет `none`, `session` или `identified` по псевдонимному профилю; при недоступности профиля возвращает `none` |
+      | 4 | Segment Resolver | Для `session` и `identified` использует профильный сегмент, для `none` — `seg-anon` |
+      | 5 | Cache Client | Читает наборы и тексты по ключу «товар плюс сегмент плюс версия» |
+      | 6 | Exclusion Filter | Всегда применяет глобальные стоп-листы; онлайн-сигналы — для `session` и `identified`, офлайн-покупки — только для `identified` |
+      | 7 | Ranking Engine | Ранжирует короткий список по наличию и правилам категории |
+      | 8 | Description Provider | Отдаёт текст при совпадении версии набора |
 
       | № | Соседний контейнер | Взаимодействие |
       |---|---|---|
-      | 1 | Recommendation Backend | Вызывает сервис по контракту `api/openapi.yaml` |
+      | 1 | Recommendation Backend | Вызывает сервис по контракту `api/recommendation-serving-api/openapi.yaml` |
       | 2 | Recommendations Cache | Хранит наборы кандидатов и предгенерированные тексты |
       | 3 | SQL DB | Хранит сегменты, исключения, остатки и правила категорий |
 
@@ -43,7 +44,7 @@ views {
 
       ### 3. Сценарии
 
-      1. **Запрос рекомендации пользователем** — участвуют все семь компонентов.
+      1. **Запрос рекомендации пользователем** — участвуют все восемь компонентов.
       """
     include *
     include platform.backend, platform.cache, platform.sqldb
@@ -73,7 +74,7 @@ views {
       | 1 | Покупатель | Открывает карточку товара и видит блок рекомендаций |
       | 2 | Сайт TechnoMart | Даёт слот в шаблоне карточки и заранее поставляет резервный rule-based блок в кэш платформы |
       | 3 | Recommendation Widget | Отображает блок в карточке товара |
-      | 4 | Recommendation Backend | Псевдонимизирует пользователя и при отказе читает резервный блок из кэша |
+      | 4 | Recommendation Backend | Псевдонимизирует пользователя, стабильно назначает рукав A/B-пилота, при отказе читает резервный блок из кэша |
       | 5 | Компоненты Serving API | Собирают ответ из набора кандидатов и персонального слоя |
       | 6 | Recommendations Cache, SQL DB | Источники набора, сегмента, исключений и остатков |
 
@@ -81,11 +82,17 @@ views {
 
       | Блок | Условие | Что происходит |
       |---|---|---|
+      | `alt` по рукаву | `variant = control` | Serving API не вызывается: отдаётся существующий rule-based блок сайта из кэша |
+      | `alt` по рукаву | `variant = treatment` | AI-подборка Serving API; назначение стабильно по хэшу сессии |
+      | `alt` по identity | `personalization_level = identified` | Разрешены онлайн-сигналы и исключение подтверждённо связанных офлайн-покупок |
+      | `alt` по identity | `personalization_level = session` | Разрешены только онлайн-сигналы сессии; офлайн-покупки не применяются |
+      | `alt` по identity | `personalization_level = none` | Используется `seg-anon`; персональные исключения не применяются |
+      | `else` по identity | Профиль отсутствует или недоступен | Запрос безопасно продолжается как `none`, без 500 или 503 |
       | `alt` по кэшу | Набор найден | `candidate_strategy: segment_cf`, персональная сборка поверх сегментного набора |
       | `alt` по кэшу | Набора нет | `candidate_strategy: popular_fallback`, отдаётся предрассчитанное популярное |
       | `alt` по тексту | Версия совпала | Применяется предгенерированное описание |
       | `alt` по тексту | Набор изменился | Подставляется статический шаблон без ссылок на товары |
-      | `catch` | Таймаут или 503 | Backend читает резервный rule-based блок из Recommendations Cache (наполнен фоново с сайта) |
+      | `catch` | Таймаут или 503 | Backend читает резервный rule-based блок из Recommendations Cache (наполнен фоново с сайта); в аналитике выдача остаётся в treatment (intent-to-treat) |
       """
 
     customer -> bitrix {
@@ -100,12 +107,25 @@ views {
     platform.widget -> platform.backend {
       title 'GET /api/widget/recommendations'
       technology 'HTTPS'
-      description 'Вызов публичной границы платформы; при первом обращении Backend выставит собственную сессионную cookie в Set-Cookie'
+      description 'Вызов публичной границы платформы; при первом обращении Backend выставит собственную сессионную cookie в Set-Cookie и по её хэшу стабильно назначит рукав эксперимента ab-cross-sell-mvp: повторные заходы покупателя попадают в тот же рукав'
     }
 
-    try 'бюджет ответа 200 мс' {
+    alt {
+      when 'variant = control: существующий baseline сайта' {
+        platform.backend -> platform.cache {
+          title 'GET rb:SKU-100234:product_card_cross_sell'
+          technology 'Redis protocol'
+          description 'Control-рукав получает тот же блок «с этим товаром часто покупают», что сайт показывает сегодня: Serving API не вызывается, AI-выдача не участвует — иначе рукава получили бы одинаковый алгоритм и пилот не измерил бы эффект'
+        }
+        platform.backend <- platform.cache {
+          title 'Rule-based подборка, candidate_strategy = rule_based'
+          description 'Блок не персонализирован (personalization_level: none), поэтому ключ кэша — «товар плюс слот»; в событиях показа зафиксируется variant = control'
+        }
+      }
+      else 'variant = treatment: AI-подборка' {
+        try 'бюджет ответа 200 мс' {
       platform.backend -> platform.serving.controller {
-        title 'GET /v1/recommendations, X-User-Ref в заголовке'
+        title 'GET /get_recommendation, X-User-Ref в заголовке'
         technology 'HTTPS'
         description 'Backend преобразует сессионную cookie в псевдонимный X-User-Ref: персональные данные не покидают доверенный контур, ML-контур получает только псевдоним'
       }
@@ -113,9 +133,32 @@ views {
         title 'Валидирует параметры и передаёт запрос'
         description 'Внутрипроцессный вызов; контроллер следит за бюджетом ответа 200 мс'
       }
+      platform.serving.orchestrator -> platform.serving.identity {
+        title 'Определяет personalization_level по X-User-Ref'
+        description 'Внутрипроцессный вызов; сырой client_id из 1С отсутствует в запросе'
+      }
+      platform.serving.identity -> platform.sqldb {
+        title 'Читает псевдонимный профиль'
+        technology 'SQL'
+        description 'Профиль содержит только разрешённый уровень связи и производные данные'
+      }
+      alt {
+        when 'профиль найден' {
+          platform.serving.orchestrator <- platform.serving.identity {
+            title 'personalization_level = session либо identified'
+            description 'identified возможен только при подтверждённой на Discovery связи сайта с клиентом 1С'
+          }
+        }
+        else 'профиль отсутствует или недоступен' {
+          platform.serving.orchestrator <- platform.serving.identity {
+            title 'personalization_level = none'
+            description 'Запрос продолжается с seg-anon, без 500 или 503'
+          }
+        }
+      }
       platform.serving.orchestrator -> platform.serving.segments {
         title 'Запрашивает сегмент покупателя'
-        description 'Внутрипроцессный вызов; сегмент определяется по X-User-Ref, при его отсутствии подставляется seg-anon'
+        description 'Внутрипроцессный вызов; при personalization_level = none подставляется seg-anon'
       }
       platform.serving.segments -> platform.sqldb {
         title 'Читает витрину сегментов по X-User-Ref'
@@ -124,7 +167,7 @@ views {
       }
       platform.serving.orchestrator <- platform.serving.segments {
         title 'seg-7 либо seg-anon'
-        description 'Аноним получает сегментную выдачу без персональных исключений'
+        description 'При personalization_level = none используется seg-anon без персональных исключений'
       }
       platform.serving.orchestrator -> platform.serving.cacheClient {
         title 'Запрашивает набор кандидатов сегмента'
@@ -157,13 +200,30 @@ views {
       }
 
       platform.serving.orchestrator -> platform.serving.exclusions {
-        title 'Убирает купленное офлайн и стоп-листы'
-        description 'Внутрипроцессный вызов; персональные исключения применяются на каждом запросе поверх сегментного набора'
+        title 'Применяет глобальные стоп-листы и персональные исключения по уровню'
+        description 'Внутрипроцессный вызов; глобальные стоп-листы применяются для всех уровней'
       }
-      platform.serving.exclusions -> platform.sqldb {
-        title 'Читает офлайн-покупки по X-User-Ref'
-        technology 'SQL'
-        description 'Чтение по ключу из PostgreSQL; офлайн-покупки поступают из синхронизации сайта с 1С через пайплайн, свежесть ограничена циклом 15 минут'
+      alt {
+        when 'personalization_level = identified' {
+          platform.serving.exclusions -> platform.sqldb {
+            title 'Читает онлайн-сигналы и офлайн-покупки'
+            technology 'SQL'
+            description 'Офлайн-покупки доступны только для подтверждённо связанного псевдонимного профиля'
+          }
+        }
+        else 'personalization_level = session' {
+          platform.serving.exclusions -> platform.sqldb {
+            title 'Читает только онлайн-сигналы сессии'
+            technology 'SQL'
+            description 'Связи с client_id из 1С нет; офлайн-покупки не применяются'
+          }
+        }
+        else 'personalization_level = none' {
+          platform.serving.orchestrator <- platform.serving.exclusions {
+            title 'Только глобальные стоп-листы'
+            description 'Персональные исключения не применяются'
+          }
+        }
       }
       platform.serving.orchestrator -> platform.serving.ranking {
         title 'Ранжирует по наличию и правилам категории'
@@ -200,7 +260,7 @@ views {
 
       platform.serving.controller <- platform.serving.orchestrator {
         title 'Собранный ответ'
-        description 'Итоговая выдача: items, candidate_strategy, set_version и текст объяснения'
+        description 'Итоговая выдача: items, candidate_strategy, personalization_level, set_version и текст объяснения'
       }
       platform.backend <- platform.serving.controller {
         title '200 OK'
@@ -216,7 +276,9 @@ views {
       }
       platform.backend <- platform.cache {
         title 'Подборка «с этим товаром часто покупают», candidate_strategy = rule_based'
-        description 'Блок не персонализирован (personalization_level: none), поэтому ключ кэша — «товар плюс слот»'
+        description 'Блок не персонализирован (personalization_level: none), поэтому ключ кэша — «товар плюс слот». Ответ тот же, что в control, но variant остаётся treatment: деградировавшие выдачи анализируются в своём рукаве (intent-to-treat), иначе отказы Serving смешали бы рукава'
+      }
+    }
       }
     }
 
